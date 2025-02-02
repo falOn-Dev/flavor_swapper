@@ -1,90 +1,191 @@
 // src/handlers.rs
-use crate::models::{AppState, Flavor, SlackCommand};
+use crate::models::{Flavor, SlackCommand};
 use axum::{
     extract::{Form, State},
-    response::Json,
+    response::Json, Extension,
 };
 use serde_json::json;
+use sqlx::query;
 use std::sync::Arc;
 
+
 pub async fn swap_flavors(
-    State(state): State<Arc<AppState>>,
+    Extension(db): Extension<Arc<sqlx::SqlitePool>>,
     Form(command): Form<SlackCommand>,
 ) -> Json<serde_json::Value> {
     let args: Vec<&str> = command.text.split_whitespace().collect();
 
-    if args.len() != 2 {
+    if args.len() != 3 {
         return Json(json!({
-            "text": "Invalid number of arguments. Please provide two flavors to swap."
+            "text": "Invalid number of arguments. Please provide a store, and two flavors to swap."
         }));
     }
 
-    let swapped_flavor = args[0].to_lowercase();
-    let new_flavor = args[1].to_lowercase();
+    let store = args[0].to_lowercase();
+    let swapped_flavor = args[1].to_lowercase();
+    let new_flavor = args[2].to_lowercase();
 
-    println!("Swapping {} with {}", swapped_flavor, new_flavor);
+    let store_id = query!(
+        "SELECT id FROM stores WHERE name = ?",
+        store
+    ).fetch_optional(&*db).await.unwrap();
 
-
-    let mut availiable_flavors = state.availiable_flavors.lock().unwrap();
-    let mut currently_serving = state.currently_serving.lock().unwrap();
-
-    let new_flavor_index = availiable_flavors.iter().position(|flavor| flavor.search_terms.contains(&new_flavor));
-    let swapped_flavor_index = currently_serving.iter().position(|flavor| flavor.search_terms.contains(&swapped_flavor));
-
-    match (new_flavor_index, swapped_flavor_index) {
-        (Some(new_flavor_index), Some(swapped_flavor_index)) => {
-            let new_flavor = availiable_flavors.remove(new_flavor_index);
-            let swapped_flavor = currently_serving.remove(swapped_flavor_index);
-
-            availiable_flavors.push(swapped_flavor.clone());
-            currently_serving.push(new_flavor.clone());
-            
-            Json(json!({
-                "text": format!("Replaced {} with {}", swapped_flavor.name, new_flavor.name),
-                "response_type": "in_channel"
-            }))
-        },
-        (None, None) => {
-            Json(json!({
-                "text": format!("Neither {} nor {} found", new_flavor, swapped_flavor),
-                "response_type": "in_channel"
-            }))
-        },
-        // Specify the error message if the new flavor is not found
-        (None, _) => {
-            Json(json!({
-                "text": format!("Flavor {} not found in availiable flavors", new_flavor),
-                "response_type": "in_channel"
-            }))
-        },
-        // Specify the error message if the swapped flavor is not found
-        (_, None) => {
-            Json(json!({
-                "text": format!("Flavor {} not found in currently serving flavors", swapped_flavor),
-                "response_type": "in_channel"
-            }))
-        },
+    if store_id.is_none() {
+        return Json(json!({
+            "text": format!("Store '{}' not found", store),
+            "response_type": "ephemeral"
+        }));
     }
+
+    let store_id = store_id.unwrap().id;
+
+    let swap_flavor_id = query!(
+        "SELECT flavor_id FROM flavor_search_terms WHERE search_term = ?",
+        new_flavor
+    ).fetch_optional(&*db).await.unwrap();
+    
+    if swap_flavor_id.is_none() {
+        return Json(json!({
+            "text": format!("Flavor '{}' not found", new_flavor),
+            "response_type": "ephemeral"
+        }));
+    }
+
+    let swap_flavor_id = swap_flavor_id.unwrap().flavor_id;
+
+    let new_flavor_id = query!(
+        "SELECT flavor_id FROM flavor_search_terms WHERE search_term = ?",
+        swapped_flavor
+    ).fetch_optional(&*db).await.unwrap();
+
+    if new_flavor_id.is_none() {
+        return Json(json!({
+            "text": format!("Flavor '{}' not found", swapped_flavor),
+            "response_type": "ephemeral"
+        }));
+    }
+
+    let new_flavor_id = new_flavor_id.unwrap().flavor_id;
+
+    println!("Store ID: {}", store_id);
+    println!("New Flavor ID: {}", new_flavor_id);
+    println!("Swap Flavor ID: {}", swap_flavor_id);
+
+    // Check if the new flavor is currently served at the store
+    let is_new_flavor_served = query!(
+        "SELECT 1 as valid_identifier FROM store_flavors WHERE store_id = ? AND flavor_id = ?",
+        store_id,
+        new_flavor_id
+    ).fetch_optional(&*db).await.unwrap().is_some();
+
+    if !is_new_flavor_served {
+        return Json(json!({
+            "text": format!("Flavor '{}' is not currently served at store '{}'", swapped_flavor, store),
+            "response_type": "ephemeral"
+        }));
+    }
+
+    // Check if the swap flavor is already served at the store
+    let is_swap_flavor_served = query!(
+        "SELECT 1 as valid_identifier FROM store_flavors WHERE store_id = ? AND flavor_id = ?",
+        store_id,
+        swap_flavor_id
+    ).fetch_optional(&*db).await.unwrap().is_some();
+
+    if is_swap_flavor_served {
+        return Json(json!({
+            "text": format!("Flavor '{}' is already served at store '{}'", new_flavor, store),
+            "response_type": "ephemeral"
+        }));
+    }
+
+    // Remove the old flavor
+    let _ = query!(
+        "DELETE FROM store_flavors WHERE store_id = ? AND flavor_id = ?",
+        store_id,
+        new_flavor_id
+    ).execute(&*db).await;
+
+    // Add the new flavor
+    let _ = query!(
+        "INSERT INTO store_flavors (store_id, flavor_id) VALUES (?, ?)",
+        store_id,
+        swap_flavor_id
+    ).execute(&*db).await;
+
+    return Json(json!({
+        "text": "Swapped flavors",
+        "response_type": "in_channel"
+    }));
+
+}
+
+pub async fn test() -> Json<serde_json::Value> {
+    return Json(json!({
+        "text": "Hello, world!",
+        "response_type": "in_channel"
+    }));
 }
 
 
 pub async fn list_flavors(
-    State(state): State<Arc<AppState>>,
+    Extension(db): Extension<Arc<sqlx::SqlitePool>>,
+    Form(command): Form<SlackCommand>,
 ) -> Json<serde_json::Value> {
-    let currently_serving = state.currently_serving.lock().unwrap();
 
-    // Format our currently serving flavors into a nice message like so
-    // Currently Serving:
-    // (tab) - flavor 1
-    // (tab) - flavor 2
-    // (tab) - flavor 3
 
-    let formatted_flavors = currently_serving.iter().fold(String::new(), |acc, flavor| {
-        format!("{}\n\t- {}", acc, flavor.name)
+
+    if command.text.is_empty() {
+        return Json(json!({
+            "text": "Please provide a store name.",
+            "response_type": "ephemeral",
+        }));
+    }
+
+    let store = command.text.to_lowercase().trim().to_owned();
+
+    println!("Listing flavors for {}", store);
+
+    let rows = match query!(
+        r#"
+        SELECT f.name
+        FROM flavors f
+        INNER JOIN store_flavors sf ON f.id = sf.flavor_id
+        INNER JOIN stores s ON s.id = sf.store_id
+        WHERE s.name = ? 
+    "#,
+    store
+    ).fetch_all(&*db).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("Error querying database: {}", e);
+            return Json(json!({
+                "text": "Failed to fetch flavors.",
+                "response_type": "ephemeral",
+            }));
+        }
+    };
+
+    if rows.is_empty() {
+        return Json(json!({
+            "text": "No flavors found for this store.",
+            "response_type": "ephemeral",
+        }));
+    }
+
+    println!("Found {} flavors", rows.len());
+    println!("{:?}", rows);
+
+    let formatted_flavors = rows.iter().enumerate().fold(String::new(), |acc, (i, flavor)| {
+        format!("{}\n- {}", acc, flavor.name)
+        
     });
+    
+
+    println!("Formatted flavors: {}", formatted_flavors);
 
     Json(json!({
-        "text": format!("Currently Serving:{}", formatted_flavors),
+        "text": format!("Currently serving flavors at {}:{}", store, formatted_flavors),
         "response_type": "in_channel"
     }))
 }
