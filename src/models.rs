@@ -10,7 +10,6 @@ pub struct SlackCommand {
     pub command: String,
     pub text: String,
     pub response_url: String,
-    pub channel_name: String,
 }
 
 #[derive(Debug, Clone, FromRow)]

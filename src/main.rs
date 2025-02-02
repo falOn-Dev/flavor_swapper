@@ -4,14 +4,11 @@ use axum::{
 };
 use dotenvy::dotenv;
 use sqlx::sqlite::SqlitePoolOptions;
-use std::{env, net::SocketAddr, sync::{Arc, Mutex}};
-use tokio::net::TcpListener;
+use std::{env, net::SocketAddr, sync::Arc};
 
 mod handlers;
 mod models;
 
-use handlers::{list_flavors};
-use models::{Flavor};
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +25,8 @@ async fn main() {
     let db = Arc::new(db);
 
     let app = Router::new()
-        .route("/list-flavors", post(list_flavors))
+        .route("/list-flavors", post(handlers::list_flavors))
+        .route("/swap-flavors", post(handlers::swap_flavors))
         .layer(Extension(db));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
