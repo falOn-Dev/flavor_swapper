@@ -2,6 +2,7 @@
 use std::{sync::{Arc, Mutex}, vec};
 
 use serde::Deserialize;
+use sqlx::FromRow;
 
 #[derive(Debug, Deserialize)]
 pub struct SlackCommand {
@@ -9,9 +10,10 @@ pub struct SlackCommand {
     pub command: String,
     pub text: String,
     pub response_url: String,
+    pub channel_name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromRow)]
 pub struct Flavor {
     pub name: String,
     pub search_terms: Vec<String>,
@@ -24,9 +26,4 @@ impl Flavor {
             search_terms: search_terms.into_iter().map(|term| term.to_string()).collect(),
         }
     }
-}
-
-pub struct AppState {
-    pub availiable_flavors: Arc<Mutex<Vec<Flavor>>>,
-    pub currently_serving: Arc<Mutex<Vec<Flavor>>>,
 }
